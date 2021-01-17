@@ -1,0 +1,248 @@
+%%% -------------------------------------------------------------------
+%%% Author  : uabjle
+%%% Description : dbase using dets 
+%%% 
+%%% Created : 10 dec 2012
+%%% -------------------------------------------------------------------
+-module(cluster).   
+   
+%% --------------------------------------------------------------------
+%% Include files
+%% --------------------------------------------------------------------
+
+%% --------------------------------------------------------------------
+
+%% External exports
+-export([start/0,
+	 extract_app_spec/2]).
+
+-define(SyslogAppSpecC0,"../app_specs/syslog_100_c0.app_spec").
+-define(SyslogAppSpecC1,"../app_specs/syslog_100_c1.app_spec").
+-define(SyslogAppSpecC2,"../app_specs/syslog_100_c2.app_spec").
+-define(SyslogAppSpecs,["../app_specs/syslog_100_c0.app_spec",
+			 "../app_specs/syslog_100_c1.app_spec",
+			 "../app_specs/syslog_100_c2.app_spec"]).
+
+-define(DbaseAppSpecC0,"../app_specs/dbase_100_c0.app_spec").
+-define(DbaseAppSpecC1,"../app_specs/dbase_100_c1.app_spec").
+-define(DbaseAppSpecC2,"../app_specs/dbase_100_c2.app_spec").
+
+%% ====================================================================
+%% External functions
+%% ====================================================================
+
+%% --------------------------------------------------------------------
+%% Function:tes cases
+%% Description: List of test cases 
+%% Returns: non
+%% --------------------------------------------------------------------
+start()->
+ %   control(),   
+    sys_init(),
+
+
+    ok.
+
+%% --------------------------------------------------------------------
+%% Function:start/0 
+%% Description: Initiate the eunit tests, set upp needed processes etc
+%% Returns: non
+%% --------------------------------------------------------------------
+
+lock_test_1()->
+    %% db_lock timeout set to
+%
+    LockId=test_lock,
+    LockTimeOut=3,   %% 3 Seconds
+%    ?assertMatch({atomic,ok},db_lock:create(LockId,LockTimeOut)),
+
+    ok.
+
+%% --------------------------------------------------------------------
+%% Function:start/0 
+%% Description: Initiate the eunit tests, set upp needed processes etc
+%% Returns: non
+%% --------------------------------------------------------------------
+status_machines()->
+    ssh:start(),
+    MachineStatus= machine:status(all),
+    ok=machine:update_status(MachineStatus),
+    ok.
+%% --------------------------------------------------------------------
+%% Function:start/0 
+%% Description: Initiate the eunit tests, set upp needed processes etc
+%% Returns: non
+%% --------------------------------------------------------------------
+sys_init()->
+    
+    % Get Current HostId
+    % Get syslog app_spec for this host 
+    % Start syslog 
+   
+    {ok,CurrentHostId}=net:gethostname(),
+    ok=start_service(CurrentHostId,?SyslogAppSpecs),
+
+    ok.
+   
+start_service(CurrentHostId,AppSpecs)->
+    HostIdAppSpecList=[{app_spec_key(host,AppSpec),AppSpec}||AppSpec<-AppSpecs],
+    {CurrentHostId,AppSpec}=lists:keyfind(CurrentHostId,AppSpecs),
+    
+    % Start Vm without ssh
+    Host=extract_app_spec(host,AppSpec),
+    VmId=extract_app_spec(vm_id,AppSpec),
+    VmDir=extract_app_spec(vm_dir,AppSpec),
+    Cookie=extract_app_spec(cookie,AppSpec),
+    {ok,Vm}=vm:create_vm(HostId,VmId,VmDir,Cookie),
+    io:format(" Vm started ~p~n",[{Host,VmId,Vm,VmDir}]),
+    
+    % Start service 
+    ServiceId=extract_app_spec(service_id,AppSpec),
+    ServiceVsn=extract_app_spec(service_vsn,AppSpec),
+    StartCmd=extract_app_spec(start_cmd,AppSpec),
+    EnvVars=extract_app_spec(env_vars,AppSpec),
+    GitPath=extract_app_spec(git_path,AppSpec),
+    {ok,ServiceId,ServiceVsn}=service:create(ServiceId,ServiceVsn,Vm,VmDir,StartCmd,EnvVars,GitPath), 
+    
+    io:format("Service started ~p~n",[{ServiceId,ServiceVsn,Host,VmId,Vm,VmDir}]),
+	
+    {pong,Vm,list_to_atom(ServiceId)}=rpc:call(Vm,list_to_atom(ServiceId),ping,[],1000), 
+
+
+  %% Syslog
+   % ?assertMatch({atomic,ok},rpc:call(sd:dbase_node(),db_sd,create,[ServiceId,ServiceVsn,AppId,AppVsn,HostId,VmId,VmDir,Vm],2000)),
+  %  {atomic,ok}=rpc:call(sd:dbase_node(),db_sd,create,["syslog","1.0.0",
+%						       "syslog_100_c2.app_spec","1.0.0",
+%						       "c2","syslog","log",syslog],2000),
+    ok.
+%% --------------------------------------------------------------------
+%% Function:start/0 
+%% Description: Initiate the eunit tests, set upp needed processes etc
+%% Returns: non
+%% --------------------------------------------------------------------
+dbase()->
+    {ok,AppSpec}=file:consult(?DbaseAppSpecC2), %Start system from c2 host
+   
+    DbaseEnvs=extract_app_spec(env_vars,AppSpec),
+    GitPath=extract_app_spec(git_path,AppSpec),
+    StartCmd=extract_app_spec(start_cmd,AppSpec),
+    %GitUser=extract_app_spec(git_user,AppSpec),
+    VmDir=extract_app_spec(vm_dir,AppSpec),
+    VmId=extract_app_spec(vm_id,AppSpec),
+    
+    % Create a Vm  
+    
+    %service:create(ServiceId,ServiceVsn,Vm,VmDir,StartCmd,EnvVars,GitPath)->
+    {ok,HostId}=net:gethostname(),
+    DbaseNode=list_to_atom("dbase@"++HostId),
+    {ok,DbaseNode}=slave:start(HostId,dbase,"-pa dbase/ebin -setcookie abc"),
+    [ok,ok,ok,ok,ok,ok,ok]=[rpc:call(DbaseNode,application,set_env,[dbase,Par,Val],5000)||{Par,Val}<-DbaseEnvs],
+    ok=rpc:call(DbaseNode,application,start,[dbase],5000),
+    {pong,DbaseNode,dbase}=rpc:call(DbaseNode,dbase,ping,[],1000), 
+   
+    
+    
+    
+    ok.
+
+
+
+%% --------------------------------------------------------------------
+%% Function:start/0 
+%% Description: Initiate the eunit tests, set upp needed processes etc
+%% Returns: non
+%% --------------------------------------------------------------------
+
+extract_app_spec(Key,AppSpecFile)->
+    {ok,[I]}=file:consult(AppSpecFile),
+    I1=lists:delete(db_app_spec,I),
+    app_spec_key(Key,I1).
+
+app_spec_key(service_id,L)->
+    {services,[L2]}=lists:keyfind(services,1,L),
+    L3=lists:delete(services,L2),
+    {service_id,ServiceId}=lists:keyfind(service_id,1,L3),
+    ServiceId;
+app_spec_key(service_vsn,L)->
+    {services,[L2]}=lists:keyfind(services,1,L),
+    {service_vsn,ServiceVsn}=lists:keyfind(service_vsn,1,L2),
+    ServiceVsn;
+app_spec_key(git_path,L)->
+    {services,[L2]}=lists:keyfind(services,1,L),
+    {git_path,GitPath}=lists:keyfind(git_path,1,L2),
+    GitPath;
+app_spec_key(start_cmd,L)->
+    {services,[L2]}=lists:keyfind(services,1,L),
+    {start_cmd,StartCmd}=lists:keyfind(start_cmd,1,L2),
+    StartCmd;
+app_spec_key(env_vars,L)->
+     {services,[L2]}=lists:keyfind(services,1,L),
+     {env_vars,EnvVars}=lists:keyfind(env_vars,1,L2),
+    EnvVars;
+
+app_spec_key(git_user,L)->
+    {services,[L2]}=lists:keyfind(services,1,L),
+    {env_vars,EnvVars}=lists:keyfind(env_vars,1,L2),
+    {dbase,git_user,GitUser}=lists:keyfind(git_user,2,EnvVars),
+    GitUser;
+
+app_spec_key(git_pw,L)->
+    {services,[L2]}=lists:keyfind(services,1,L),
+    {env_vars,EnvVars}=lists:keyfind(env_vars,1,L2),
+    {dbase,git_pw,GitPw}=lists:keyfind(git_pw,2,EnvVars),
+    GitPw;
+
+app_spec_key(cl_dir,L)->
+    {services,[L2]}=lists:keyfind(services,1,L),
+    {env_vars,EnvVars}=lists:keyfind(env_vars,1,L2),
+    {dbase,cl_dir,ClDir}=lists:keyfind(cl_dir,2,EnvVars),
+    ClDir;
+
+app_spec_key(cl_file,L)->
+    {services,[L2]}=lists:keyfind(services,1,L),
+    {env_vars,EnvVars}=lists:keyfind(env_vars,1,L2),
+    {dbase,cl_file,ClFile}=lists:keyfind(cl_file,2,EnvVars),
+    ClFile;
+
+app_spec_key(app_specs_dir,L)->
+    {services,[L2]}=lists:keyfind(services,1,L),
+    {env_vars,EnvVars}=lists:keyfind(env_vars,1,L2),
+    {dbase,app_specs_dir,AppSpecs}=lists:keyfind(app_specs_dir,2,EnvVars),
+    AppSpecs;
+
+app_spec_key(dbase_nodes,L)->
+    {services,[L2]}=lists:keyfind(services,1,L),
+    {env_vars,EnvVars}=lists:keyfind(env_vars,1,L2),
+    {dbase,dbase_nodes,DbaseNodes}=lists:keyfind(dbase_nodes,2,EnvVars),
+    DbaseNodes;
+
+
+app_spec_key(Key,L)->
+    {Key,Value}=lists:keyfind(Key,1,L),
+    Value.
+
+%% --------------------------------------------------------------------
+%% Function:start/0 
+%% Description: Initiate the eunit tests, set upp needed processes etc
+%% Returns: non
+%% --------------------------------------------------------------------
+
+%% --------------------------------------------------------------------
+%% Function:start/0 
+%% Description: Initiate the eunit tests, set upp needed processes etc
+%% Returns: non
+%% --------------------------------------------------------------------
+setup()->
+    
+    
+    ok.
+%% --------------------------------------------------------------------
+%% Function:start/0 
+%% Description: Initiate the eunit tests, set upp needed processes etc
+%% Returns: non
+%% -------------------------------------------------------------------    
+
+cleanup()->
+  
+  %  init:stop(),
+    ok.
